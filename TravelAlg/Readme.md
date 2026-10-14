@@ -11,7 +11,7 @@ Run:
 ```
 
 ### Needs only numpy and matplotlib.
-
+---
 ## What this script does (same order as the console output):
     STEP 1  Inputs: field rectangle, obstacles, home pose, robot parameters
     STEP 2  Configuration space: shrink the field by the robot radius (headland)
