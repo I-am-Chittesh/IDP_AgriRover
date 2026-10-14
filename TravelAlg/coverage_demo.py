@@ -1,33 +1,4 @@
 #!/usr/bin/env python3
-"""
-AgriTwin rover: boustrophedon coverage path planning, step by step.
-
-Run:
-    python coverage_demo.py                  # default field, opens 3 figures
-    python coverage_demo.py --no-show        # only saves PNGs + waypoints.csv
-    python coverage_demo.py --random 5 --seed 7     # random obstacles
-    python coverage_demo.py --sweep y        # force sweep direction (x, y or auto)
-    python coverage_demo.py --swath 2.0      # change sensor footprint width (m)
-
-Needs only numpy and matplotlib.
-
-What this script does (same order as the console output):
-    STEP 1  Inputs: field rectangle, obstacles, home pose, robot parameters
-    STEP 2  Configuration space: shrink the field by the robot radius (headland)
-            and inflate every obstacle by the robot radius, so the robot can be
-            treated as a single point
-    STEP 3  Boustrophedon cell decomposition: sweep a line across the field,
-            start a new cell whenever the free interval on the line changes
-    STEP 4  Swaths: parallel lines inside each cell, spacing d = footprint * (1 - overlap)
-    STEP 5  Mission: order the cells (greedy nearest), snake through each cell,
-            connect cells with A* + line-of-sight smoothing, A* back to home
-    STEP 6  Verify: rasterize the sensor footprint along the path and measure coverage
-    STEP 7  Why it matters: sample a synthetic soil moisture field along the
-            path and rebuild a heatmap with IDW (the layer the digital twin shows)
-
-In ROS2 this whole pipeline is what opennav_coverage (Fields2Cover) does, and the
-final waypoints.csv is what Nav2 FollowWaypoints would consume.
-"""
 import argparse
 import heapq
 import math
@@ -46,16 +17,12 @@ from matplotlib.patches import Rectangle
 
 EPS = 1e-6
 
-# Colors match the pitch deck: charcoal, cyber lime, high-vis amber.
 BG, PANEL, LIME, AMBER = "#121417", "#191D21", "#CCFF00", "#FFB000"
 OFF, MUTED, OBST, RED = "#F2F1EC", "#9BA3AB", "#3A4047", "#FF5C5C"
 CELL_COLORS = ["#CCFF00", "#FFB000", "#2EC4B6", "#8B7CFF", "#FF6B6B", "#6CB4FF",
                "#F4A6D7", "#B5E48C", "#FFD166", "#06D6A0", "#EF476F", "#118AB2"]
 
 
-# ----------------------------------------------------------------------------
-# Data containers
-# ----------------------------------------------------------------------------
 @dataclass
 class Params:
     swath_w: float = 1.5      # sensor footprint width on the ground (m)
@@ -75,8 +42,7 @@ class Params:
 class Problem:
     W: float
     H: float
-    obstacles: list           # (x0, y0, x1, y1) axis-aligned rectangles
-    names: list
+    obstacles: list
     home: tuple
 
     def transposed(self):
@@ -102,21 +68,17 @@ class Cell:
 
 @dataclass
 class Plan:
-    sweep_axis: str           # "x" means the sweep line moves along x (vertical swaths)
+    sweep_axis: str
     cells: list
-    crit: list                # sweep positions where the free space changes
-    route: list               # [(Cell, swath polyline)] in visiting order
-    segments: list            # [(kind, polyline)] kind in transit / coverage / return
+    crit: list
+    route: list               
+    segments: list
     skipped: list
 
 
 def inflate(obstacles, r):
     return [(x0 - r, y0 - r, x1 + r, y1 + r) for x0, y0, x1, y1 in obstacles]
 
-
-# ----------------------------------------------------------------------------
-# STEP 2: configuration space
-# ----------------------------------------------------------------------------
 class Space:
     """Usable rectangle minus inflated obstacles. Points on the boundary count as free."""
 
@@ -152,9 +114,6 @@ class Space:
         return self._grids[res]
 
 
-# ----------------------------------------------------------------------------
-# STEP 3: boustrophedon cell decomposition
-# ----------------------------------------------------------------------------
 def free_intervals(xa, xb, infl, ylo, yhi, min_len):
     """Free y-intervals on a sweep line anywhere inside the slab [xa, xb]."""
     blocked = []
@@ -210,9 +169,6 @@ def decompose(prob, P):
     return cells, [x for x in xs if space.xlo + EPS < x < space.xhi - EPS]
 
 
-# ----------------------------------------------------------------------------
-# STEP 4: swaths and snake path
-# ----------------------------------------------------------------------------
 def swath_positions(cell, d):
     """Evenly spread swath lines so the spacing is never larger than d."""
     n = max(1, math.ceil(cell.width / d - 1e-9))
@@ -231,9 +187,6 @@ def snake(cell, xs, start_bottom, reverse):
     return pts
 
 
-# ----------------------------------------------------------------------------
-# STEP 5: cell ordering, A*, mission assembly
-# ----------------------------------------------------------------------------
 def order_cells(cells, home, d):
     """Greedy nearest neighbour: always go to the cell whose cheapest entry
     corner is closest. Each cell can be entered from either side and either end."""
@@ -360,9 +313,6 @@ def plan_oriented(prob, P, sweep):
     return to_world(plan_mission(prob.transposed(), P))
 
 
-# ----------------------------------------------------------------------------
-# Metrics
-# ----------------------------------------------------------------------------
 def polyline(segments):
     out = []
     for _, pts in segments:
@@ -409,9 +359,6 @@ def resample(poly, step):
     return np.c_[np.interp(t, s, a[:, 0]), np.interp(t, s, a[:, 1])]
 
 
-# ----------------------------------------------------------------------------
-# STEP 6: verify coverage
-# ----------------------------------------------------------------------------
 def coverage_check(prob, P, plan, res=0.1):
     W, H, r = prob.W, prob.H, P.robot_r
     nx, ny = int(round(W / res)), int(round(H / res))
@@ -439,9 +386,6 @@ def coverage_check(prob, P, plan, res=0.1):
                 area=reach.sum() * res * res, raster=raster)
 
 
-# ----------------------------------------------------------------------------
-# STEP 7: synthetic soil moisture + IDW heatmap
-# ----------------------------------------------------------------------------
 def moisture_truth(x, y):
     """Made-up soil moisture (percent). Wet patch, wetter patch, dry patch."""
     g = lambda cx, cy, s: np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * s * s))
@@ -462,10 +406,6 @@ def idw(sxy, sv, gx, gy, k=8, power=2.0):
         out[i:i + 800] = (w * sv[idx]).sum(1) / w.sum(1)
     return out.reshape(gx.shape)
 
-
-# ----------------------------------------------------------------------------
-# Plot helpers
-# ----------------------------------------------------------------------------
 def style():
     plt.rcParams.update({
         "figure.facecolor": BG, "axes.facecolor": PANEL, "savefig.facecolor": BG,
@@ -637,9 +577,6 @@ def fig_heatmap(prob, P, plan, rng, path):
     return rmse, len(samples)
 
 
-# ----------------------------------------------------------------------------
-# Problem setup
-# ----------------------------------------------------------------------------
 def default_problem(P):
     obs = [(6, 10, 9, 13), (14, 3, 18, 7), (16, 14, 18, 17), (21, 11, 25, 15)]
     names = ["well", "tree cluster", "post", "pump shed"]
@@ -678,9 +615,7 @@ def write_waypoints(plan, path):
     return len(poly)
 
 
-# ----------------------------------------------------------------------------
-# Main
-# ----------------------------------------------------------------------------
+
 def main():
     ap = argparse.ArgumentParser(description="Boustrophedon coverage planning demo")
     ap.add_argument("--no-show", action="store_true", help="save figures only")
